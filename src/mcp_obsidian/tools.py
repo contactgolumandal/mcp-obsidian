@@ -434,6 +434,52 @@ class ComplexSearchToolHandler(ToolHandler):
            )
        ]
 
+class SearchByTagToolHandler(ToolHandler):
+   def __init__(self):
+       super().__init__("obsidian_search_by_tag")
+
+   def get_tool_description(self):
+       return Tool(
+           name=self.name,
+           description=(
+               "Find all notes carrying a specific tag. Matches the note's parsed "
+               "tag set (YAML frontmatter `tags:` plus inline `#tag` occurrences), "
+               "so hits on the tag name inside ordinary prose are NOT returned. "
+               "Pass the tag without the leading '#'. Hierarchical-tag matching is "
+               "exact — searching for 'work' will not match notes tagged "
+               "'work/tasks'. Optionally scope to a vault subdirectory."
+           ),
+           inputSchema={
+               "type": "object",
+               "properties": {
+                   "tag": {
+                       "type": "string",
+                       "description": "Tag name without the leading '#' (e.g. 'project', 'work/tasks')."
+                   },
+                   "dirpath": {
+                       "type": "string",
+                       "description": "Optional vault-relative directory to scope results to (e.g. 'work/projects'). Trailing slash is stripped."
+                   }
+               },
+               "required": ["tag"]
+           }
+       )
+
+   def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+       if "tag" not in args:
+           raise RuntimeError("tag argument missing in arguments")
+
+       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       paths = api.search_by_tag(args["tag"], args.get("dirpath"))
+
+       return [
+           TextContent(
+               type="text",
+               text=json.dumps(paths, indent=2)
+           )
+       ]
+
+
 class BatchGetFileContentsToolHandler(ToolHandler):
     def __init__(self):
         super().__init__("obsidian_batch_get_file_contents")
