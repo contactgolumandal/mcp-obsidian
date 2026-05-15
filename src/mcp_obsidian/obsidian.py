@@ -226,6 +226,26 @@ class Obsidian():
         results = self.search_json(query)
         return [r["filename"] for r in results]
 
+    def get_frontmatter(self, filepath: str) -> dict:
+        """Return the parsed frontmatter of a single note as a dict.
+
+        Uses the Local REST API's `application/vnd.olrapi.note+json` view,
+        so YAML parsing happens server-side. Returns an empty dict for
+        notes without frontmatter; never raises for missing frontmatter
+        (only for missing files or transport errors).
+        """
+        url = f"{self.get_base_url()}/vault/{filepath}"
+        headers = self._get_headers() | {
+            'Accept': 'application/vnd.olrapi.note+json'
+        }
+
+        def call_fn():
+            response = requests.get(url, headers=headers, verify=self.verify_ssl, timeout=self.timeout)
+            response.raise_for_status()
+            payload = response.json()
+            return payload.get("frontmatter", {}) or {}
+
+        return self._safe_call(call_fn)
 
     def get_periodic_note(self, period: str, type: str = "content") -> Any:
         """Get current periodic note for the specified period.

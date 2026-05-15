@@ -480,6 +480,47 @@ class SearchByTagToolHandler(ToolHandler):
        ]
 
 
+class GetFrontmatterToolHandler(ToolHandler):
+   def __init__(self):
+       super().__init__("obsidian_get_frontmatter")
+
+   def get_tool_description(self):
+       return Tool(
+           name=self.name,
+           description=(
+               "Return just the YAML frontmatter of a note as a parsed JSON "
+               "object. Lighter than obsidian_get_file_contents when you only "
+               "need metadata (tags, aliases, status fields, etc.). Returns "
+               "an empty object for notes without frontmatter."
+           ),
+           inputSchema={
+               "type": "object",
+               "properties": {
+                   "filepath": {
+                       "type": "string",
+                       "description": "Path to the file (relative to vault root)",
+                       "format": "path"
+                   }
+               },
+               "required": ["filepath"]
+           }
+       )
+
+   def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+       if "filepath" not in args:
+           raise RuntimeError("filepath argument missing in arguments")
+
+       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       fm = api.get_frontmatter(args["filepath"])
+
+       return [
+           TextContent(
+               type="text",
+               text=json.dumps(fm, indent=2)
+           )
+       ]
+
+
 class BatchGetFileContentsToolHandler(ToolHandler):
     def __init__(self):
         super().__init__("obsidian_batch_get_file_contents")
