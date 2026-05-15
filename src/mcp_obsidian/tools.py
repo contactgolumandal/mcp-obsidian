@@ -294,7 +294,13 @@ class PutContentToolHandler(ToolHandler):
    def get_tool_description(self):
        return Tool(
            name=self.name,
-           description="Create a new file in your vault or update the content of an existing one in your vault.",
+           description=(
+               "Creates a new file, or COMPLETELY OVERWRITES the content of an existing "
+               "file. The previous content is lost. "
+               "Use `obsidian_append_content` to add content to a file without erasing "
+               "what's already there. Use `obsidian_patch_content` to modify a specific "
+               "heading, block or frontmatter field while keeping the rest intact."
+           ),
            inputSchema={
                "type": "object",
                "properties": {
@@ -305,7 +311,7 @@ class PutContentToolHandler(ToolHandler):
                    },
                    "content": {
                        "type": "string",
-                       "description": "Content of the file you would like to upload"
+                       "description": "Full file content. Replaces existing content entirely if the file already exists."
                    }
                },
                "required": ["filepath", "content"]
