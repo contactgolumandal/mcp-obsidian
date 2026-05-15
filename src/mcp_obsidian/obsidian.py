@@ -115,12 +115,12 @@ class Obsidian():
     
     def append_content(self, filepath: str, content: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
-        
+
         def call_fn():
             response = requests.post(
-                url, 
-                headers=self._get_headers() | {'Content-Type': 'text/markdown'}, 
-                data=content,
+                url,
+                headers=self._get_headers() | {'Content-Type': 'text/markdown; charset=utf-8'},
+                data=content.encode("utf-8"),
                 verify=self.verify_ssl,
                 timeout=self.timeout
             )
@@ -128,19 +128,23 @@ class Obsidian():
             return None
 
         return self._safe_call(call_fn)
-    
+
     def patch_content(self, filepath: str, operation: str, target_type: str, target: str, content: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
-        
+
+        # NOTE: The Local REST API rejects 'text/markdown; charset=utf-8' on
+        # PATCH (error 40012) — its PATCH parser only accepts the plain
+        # 'text/markdown' form. We still send the body as utf-8 bytes so the
+        # encoding is unambiguous on the wire.
         headers = self._get_headers() | {
             'Content-Type': 'text/markdown',
             'Operation': operation,
             'Target-Type': target_type,
             'Target': urllib.parse.quote(target)
         }
-        
+
         def call_fn():
-            response = requests.patch(url, headers=headers, data=content, verify=self.verify_ssl, timeout=self.timeout)
+            response = requests.patch(url, headers=headers, data=content.encode("utf-8"), verify=self.verify_ssl, timeout=self.timeout)
             response.raise_for_status()
             return None
 
@@ -148,12 +152,12 @@ class Obsidian():
 
     def put_content(self, filepath: str, content: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
-        
+
         def call_fn():
             response = requests.put(
-                url, 
-                headers=self._get_headers() | {'Content-Type': 'text/markdown'}, 
-                data=content,
+                url,
+                headers=self._get_headers() | {'Content-Type': 'text/markdown; charset=utf-8'},
+                data=content.encode("utf-8"),
                 verify=self.verify_ssl,
                 timeout=self.timeout
             )
