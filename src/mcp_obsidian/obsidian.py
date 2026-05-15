@@ -214,18 +214,71 @@ class Obsidian():
     
     def search_json(self, query: dict) -> Any:
         url = f"{self.get_base_url()}/search/"
-        
+
         headers = self._get_headers() | {
             'Content-Type': 'application/vnd.olrapi.jsonlogic+json'
         }
-        
+
         def call_fn():
             response = requests.post(url, headers=headers, json=query, verify=self.verify_ssl, timeout=self.timeout)
             response.raise_for_status()
             return response.json()
 
         return self._safe_call(call_fn)
-    
+
+    def search_by_tag(self, tag: str, dirpath: str | None = None) -> list[str]:
+        """Return paths of all notes carrying the given tag.
+
+        Matches against the parsed tag set (frontmatter `tags:` plus inline
+        `#tag` occurrences), so hits on the tag name inside ordinary prose
+        do NOT match — unlike `simple_search('#tag')`. The tag should be
+        passed without the leading `#`.
+
+        Args:
+            tag: Tag name without the leading '#'. Match is exact; the
+                hierarchical parent of a `parent/child` tag does NOT match
+                `parent` here (the API exposes hierarchy only via /tags/).
+            dirpath: Optional vault-relative directory to scope results to,
+                e.g. 'work/projects'. Trailing slash is stripped.
+
+        Returns:
+            List of matching file paths (vault-relative).
+        """
+        tag_query: dict = {"in": [tag, {"var": "tags"}]}
+        if dirpath:
+            prefix = dirpath.rstrip("/") + "/"
+            query: dict = {
+                "and": [
+                    tag_query,
+                    {"glob": [f"{prefix}*", {"var": "path"}]},
+                ]
+            }
+        else:
+            query = tag_query
+        results = self.search_json(query)
+        return [r["filename"] for r in results]
+
+    def get_frontmatter(self, filepath: str) -> dict:
+        """Return the parsed frontmatter of a single note as a dict.
+
+        Uses the Local REST API's `application/vnd.olrapi.note+json` view,
+        so YAML parsing happens server-side. Returns an empty dict for
+        notes without frontmatter; never raises for missing frontmatter
+        (only for missing files or transport errors).
+        """
+        url = f"{self.get_base_url()}/vault/{filepath}"
+        headers = self._get_headers() | {
+            'Accept': 'application/vnd.olrapi.note+json'
+        }
+
+        def call_fn():
+            response = requests.get(url, headers=headers, verify=self.verify_ssl, timeout=self.timeout)
+            response.raise_for_status()
+            payload = response.json()
+            return payload.get("frontmatter", {}) or {}
+
+        return self._safe_call(call_fn)
+
     def get_periodic_note(self, period: str, type: str = "content") -> Any:
         """Get current periodic note for the specified period.
         
