@@ -12,8 +12,85 @@ from . import obsidian
 api_key = os.getenv("OBSIDIAN_API_KEY", "")
 obsidian_host = os.getenv("OBSIDIAN_HOST", "127.0.0.1")
 
-if api_key == "":
-    raise ValueError(f"OBSIDIAN_API_KEY environment variable required. Working directory: {os.getcwd()}")
+def get_active_vault_connection():
+    """Returns (host, port, api_key, use_https, vault_path) for the active vault connection."""
+    import os
+    import json
+    import platform
+    
+    # Defaults
+    default_host = os.getenv("OBSIDIAN_HOST", "127.0.0.1")
+    default_key = os.getenv("OBSIDIAN_API_KEY", "")
+    default_port = 27123
+    use_https = False
+    
+    # 1. Determine active vault path from state file
+    state_path = os.path.join(os.path.dirname(__file__), "../../.active_vault.json")
+    active_path = None
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+                active_path = state.get("active_vault_path")
+        except Exception:
+            pass
+            
+    # 2. If no state, fall back to last active vault from obsidian.json
+    if not active_path:
+        json_path = None
+        system = platform.system()
+        if system == "Windows":
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                json_path = os.path.join(appdata, "obsidian\\obsidian.json")
+        elif system == "Darwin":
+            json_path = os.path.expanduser("~/Library/Application Support/obsidian/obsidian.json")
+        else:
+            json_path = os.path.expanduser("~/.config/obsidian/obsidian.json")
+
+        if json_path and os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    vaults = data.get("vaults", {})
+                    for k, v in vaults.items():
+                        if v.get("open"):
+                            active_path = os.path.normpath(v.get("path"))
+                            break
+            except Exception:
+                pass
+
+    # 3. Read vault-specific settings (port and api key) from the active vault
+    if active_path:
+        # Check both Windows-style and Unix-style slashes
+        settings_path = os.path.join(active_path, ".obsidian", "plugins", "obsidian-local-rest-api", "data.json")
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                    val_key = settings.get("apiKey", default_key)
+                    
+                    # Determine port based on secure/insecure settings
+                    enable_insecure = settings.get("enableInsecureServer", True)
+                    insecure_port = settings.get("insecurePort", 27123)
+                    secure_port = settings.get("port", 27124)
+                    
+                    if enable_insecure:
+                        return default_host, insecure_port, val_key, False, active_path
+                    else:
+                        return default_host, secure_port, val_key, True, active_path
+            except Exception:
+                pass
+                
+    return default_host, default_port, default_key, use_https, active_path
+
+def get_obsidian_api() -> obsidian.Obsidian:
+    host, port, key, use_https, vault_path = get_active_vault_connection()
+    protocol = "https" if use_https else "http"
+    if not key:
+        raise ValueError("OBSIDIAN_API_KEY required. Please configure it in your vault settings or set OBSIDIAN_API_KEY in your .env file.")
+    return obsidian.Obsidian(api_key=key, host=host, port=port, protocol=protocol)
+
 
 TOOL_LIST_FILES_IN_VAULT = "obsidian_list_files_in_vault"
 TOOL_LIST_FILES_IN_DIR = "obsidian_list_files_in_dir"
@@ -44,7 +121,7 @@ class ListFilesInVaultToolHandler(ToolHandler):
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
 
         files = api.list_files_in_vault()
 
@@ -80,7 +157,7 @@ class ListFilesInDirToolHandler(ToolHandler):
         if "dirpath" not in args:
             raise RuntimeError("dirpath argument missing in arguments")
 
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
 
         files = api.list_files_in_dir(args["dirpath"])
 
@@ -116,7 +193,7 @@ class GetFileContentsToolHandler(ToolHandler):
         if "filepath" not in args:
             raise RuntimeError("filepath argument missing in arguments")
 
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
 
         content = api.get_file_contents(args["filepath"])
 
@@ -159,7 +236,7 @@ class SearchToolHandler(ToolHandler):
 
         context_length = args.get("context_length", 100)
         
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
         results = api.search(args["query"], context_length)
         
         formatted_results = []
@@ -218,7 +295,7 @@ class AppendContentToolHandler(ToolHandler):
        if "filepath" not in args or "content" not in args:
            raise RuntimeError("filepath and content arguments required")
 
-       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       api = get_obsidian_api()
        api.append_content(args.get("filepath", ""), args["content"])
 
        return [
@@ -282,7 +359,7 @@ class PatchContentToolHandler(ToolHandler):
        if not all(k in args for k in ["filepath", "operation", "target_type", "target", "content"]):
            raise RuntimeError("filepath, operation, target_type, target and content arguments required")
 
-       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       api = get_obsidian_api()
        api.patch_content(
            args.get("filepath", ""),
            args.get("operation", ""),
@@ -333,7 +410,7 @@ class PutContentToolHandler(ToolHandler):
        if "filepath" not in args or "content" not in args:
            raise RuntimeError("filepath and content arguments required")
 
-       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       api = get_obsidian_api()
        api.put_content(args.get("filepath", ""), args["content"])
 
        return [
@@ -377,7 +454,7 @@ class DeleteFileToolHandler(ToolHandler):
        if not args.get("confirm", False):
            raise RuntimeError("confirm must be set to true to delete a file")
 
-       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       api = get_obsidian_api()
        api.delete_file(args["filepath"])
 
        return [
@@ -441,7 +518,7 @@ class ComplexSearchToolHandler(ToolHandler):
        if "query" not in args:
            raise RuntimeError("query argument missing in arguments")
 
-       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       api = get_obsidian_api()
        results = api.search_json(args.get("query", ""))
 
        return [
@@ -486,7 +563,7 @@ class SearchByTagToolHandler(ToolHandler):
        if "tag" not in args:
            raise RuntimeError("tag argument missing in arguments")
 
-       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       api = get_obsidian_api()
        paths = api.search_by_tag(args["tag"], args.get("dirpath"))
 
        return [
@@ -527,7 +604,7 @@ class GetFrontmatterToolHandler(ToolHandler):
        if "filepath" not in args:
            raise RuntimeError("filepath argument missing in arguments")
 
-       api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+       api = get_obsidian_api()
        fm = api.get_frontmatter(args["filepath"])
 
        return [
@@ -567,7 +644,7 @@ class BatchGetFileContentsToolHandler(ToolHandler):
         if "filepaths" not in args:
             raise RuntimeError("filepaths argument missing in arguments")
 
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
         content = api.get_batch_file_contents(args["filepaths"])
 
         return [
@@ -618,7 +695,7 @@ class PeriodicNotesToolHandler(ToolHandler):
         if type not in valid_types:
             raise RuntimeError(f"Invalid type: {type}. Must be one of: {', '.join(valid_types)}")
 
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
         content = api.get_periodic_note(period,type)
 
         return [
@@ -678,7 +755,7 @@ class RecentPeriodicNotesToolHandler(ToolHandler):
         if not isinstance(include_content, bool):
             raise RuntimeError(f"Invalid include_content: {include_content}. Must be a boolean")
 
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
         results = api.get_recent_periodic_notes(period, limit, include_content)
 
         return [
@@ -725,7 +802,7 @@ class RecentChangesToolHandler(ToolHandler):
         if not isinstance(days, int) or days < 1:
             raise RuntimeError(f"Invalid days: {days}. Must be a positive integer")
 
-        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        api = get_obsidian_api()
         results = api.get_recent_changes(limit, days)
 
         return [
@@ -749,10 +826,6 @@ class WakeUpObsidianToolHandler(ToolHandler):
                     "vault_path": {
                         "type": "string",
                         "description": "Optional absolute path of the vault to open (e.g. 'C:\\Users\\conta\\Documents\\Vault'). If omitted, opens the last active vault."
-                    },
-                    "force_switch": {
-                        "type": "boolean",
-                        "description": "If true, closes currently running Obsidian instances first to free up the API port for the target vault. Defaults to true if a different vault is requested."
                     }
                 },
                 "required": []
@@ -770,24 +843,8 @@ class WakeUpObsidianToolHandler(ToolHandler):
         system = platform.system()
         vaults_info = {}
         last_open_vault = None
-        is_running = False
-        active_vault_path = None
         
-        # 1. Check if Obsidian is already running
-        try:
-            if system == "Windows":
-                output = subprocess.check_output('tasklist /FI "IMAGENAME eq Obsidian.exe"', shell=True, text=True)
-                is_running = "Obsidian.exe" in output
-            elif system == "Darwin":
-                output = subprocess.check_output(['pgrep', '-x', 'Obsidian'], text=True)
-                is_running = len(output.strip()) > 0
-            else:
-                output = subprocess.check_output(['pgrep', '-x', 'obsidian'], text=True)
-                is_running = len(output.strip()) > 0
-        except Exception:
-            is_running = False
-
-        # 2. Parse obsidian.json to find available vaults
+        # 1. Parse obsidian.json to find available vaults
         json_path = None
         if system == "Windows":
             appdata = os.environ.get("APPDATA")
@@ -813,53 +870,38 @@ class WakeUpObsidianToolHandler(ToolHandler):
             except Exception:
                 pass
 
-        # 3. Detect which vault is currently active on port 27123
-        if is_running:
-            try:
-                url = f"http://{obsidian_host}:27123/vault/"
-                headers = {"Authorization": f"Bearer {api_key}"}
-                r = requests.get(url, headers=headers, timeout=1.5)
-                if r.status_code == 200:
-                    api_files = [f.get("path") for f in r.json() if "path" in f]
-                    best_match_count = -1
-                    for v_id, v_path in vaults_info.items():
-                        if os.path.exists(v_path):
-                            try:
-                                local_files = os.listdir(v_path)
-                                match_count = sum(1 for f in api_files if f in local_files)
-                                if match_count > best_match_count:
-                                    best_match_count = match_count
-                                    active_vault_path = v_path
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-
-        # 4. Determine target vault to open
+        # 2. Determine target vault to open
         target_path = args.get("vault_path")
         if target_path:
             target_path = os.path.normpath(target_path)
         else:
             target_path = last_open_vault
 
-        # 5. Handle switching (close running instance if different vault is requested)
-        force_switch = args.get("force_switch", True)
-        was_closed = False
-        if is_running and target_path and active_vault_path and target_path != active_vault_path and force_switch:
+        # 3. Save target_path to state file
+        if target_path:
+            state_path = os.path.join(os.path.dirname(__file__), "../../.active_vault.json")
             try:
-                if system == "Windows":
-                    subprocess.run("taskkill /IM Obsidian.exe /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    subprocess.run(["pkill", "-f", "Obsidian"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                import time
-                time.sleep(1.5)
-                is_running = False
-                active_vault_path = None
-                was_closed = True
+                with open(state_path, "w", encoding="utf-8") as f:
+                    json.dump({"active_vault_path": target_path}, f)
             except Exception:
                 pass
 
-        # 6. Launch the vault
+        # 4. Resolve host, port, API key for this target vault
+        host, port, key, use_https, resolved_path = get_active_vault_connection()
+        
+        # 5. Check if this specific vault's REST API is currently active
+        is_running = False
+        try:
+            proto = "https" if use_https else "http"
+            url = f"{proto}://{host}:{port}/"
+            headers = {"Authorization": f"Bearer {key}"}
+            r = requests.get(url, headers=headers, timeout=1.5, verify=False)
+            if r.status_code == 200:
+                is_running = True
+        except Exception:
+            is_running = False
+
+        # 6. Launch the vault if it is not already running
         launched = False
         error_msg = ""
         launch_url = "obsidian://open"
@@ -867,77 +909,74 @@ class WakeUpObsidianToolHandler(ToolHandler):
             encoded_path = urllib.parse.quote(target_path)
             launch_url = f"obsidian://open?path={encoded_path}"
 
-        if system == "Windows":
-            # If no specific vault is targeted and we didn't close it, try launching executable
-            if not target_path and not was_closed:
-                program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
-                local_appdata = os.environ.get("LocalAppData", "")
-                program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
-                
-                paths = []
-                if local_appdata:
-                    paths.append(os.path.join(local_appdata, "Obsidian\\Obsidian.exe"))
-                paths.append(os.path.join(program_files, "Obsidian\\Obsidian.exe"))
-                paths.append(os.path.join(program_files_x86, "Obsidian\\Obsidian.exe"))
+        if not is_running:
+            if system == "Windows":
+                # If no specific vault is targeted, try launching the executable directly
+                if not target_path:
+                    program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+                    local_appdata = os.environ.get("LocalAppData", "")
+                    program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+                    
+                    paths = []
+                    if local_appdata:
+                        paths.append(os.path.join(local_appdata, "Obsidian\\Obsidian.exe"))
+                    paths.append(os.path.join(program_files, "Obsidian\\Obsidian.exe"))
+                    paths.append(os.path.join(program_files_x86, "Obsidian\\Obsidian.exe"))
 
-                for path in paths:
-                    if os.path.exists(path):
-                        try:
-                            cmd = ["powershell.exe", "-Command", f"Start-Process '{path}' -Wait"]
-                            subprocess.Popen(cmd)
-                            launched = True
-                            break
-                        except Exception as e:
-                            error_msg = str(e)
+                    for path in paths:
+                        if os.path.exists(path):
+                            try:
+                                cmd = ["powershell.exe", "-Command", f"Start-Process '{path}' -Wait"]
+                                subprocess.Popen(cmd)
+                                launched = True
+                                break
+                            except Exception as e:
+                                error_msg = str(e)
 
-            if not launched:
+                if not launched:
+                    try:
+                        cmd = ["powershell.exe", "-Command", f"Start-Process '{launch_url}' -Wait"]
+                        subprocess.Popen(cmd)
+                        launched = True
+                    except Exception as e:
+                        error_msg = str(e)
+
+            elif system == "Darwin":  # macOS
                 try:
-                    cmd = ["powershell.exe", "-Command", f"Start-Process '{launch_url}' -Wait"]
-                    subprocess.Popen(cmd)
+                    if target_path:
+                        subprocess.Popen(["open", launch_url])
+                    else:
+                        macos_path = "/Applications/Obsidian.app"
+                        if os.path.exists(macos_path):
+                            subprocess.Popen(["open", macos_path])
+                        else:
+                            subprocess.Popen(["open", launch_url])
                     launched = True
                 except Exception as e:
                     error_msg = str(e)
 
-        elif system == "Darwin":  # macOS
-            try:
-                if target_path:
-                    subprocess.Popen(["open", launch_url])
-                else:
-                    macos_path = "/Applications/Obsidian.app"
-                    if os.path.exists(macos_path):
-                        subprocess.Popen(["open", macos_path])
-                    else:
-                        subprocess.Popen(["open", launch_url])
-                launched = True
-            except Exception as e:
-                error_msg = str(e)
-
-        else:  # Linux / other
-            try:
-                if target_path:
-                    subprocess.Popen(["xdg-open", launch_url])
-                else:
-                    try:
-                        subprocess.Popen(["obsidian"])
-                    except Exception:
+            else:  # Linux / other
+                try:
+                    if target_path:
                         subprocess.Popen(["xdg-open", launch_url])
-                launched = True
-            except Exception as e:
-                error_msg = str(e)
+                    else:
+                        try:
+                            subprocess.Popen(["obsidian"])
+                        except Exception:
+                            subprocess.Popen(["xdg-open", launch_url])
+                    launched = True
+                except Exception as e:
+                    error_msg = str(e)
 
         # 7. Format results
         status_text = "running" if (is_running or launched) else "not running"
-        active_vault_text = f"Active vault on API: '{active_vault_path}'" if active_vault_path else "No active vault detected on API port"
+        active_vault_text = f"listening on port {port}" if is_running else "not responding on port"
         
-        response_msg = f"Obsidian status: {status_text} ({active_vault_text}).\n"
-        if was_closed:
-            response_msg += f"Closed previous active vault '{active_vault_path}' to free up API port.\n"
-
+        response_msg = f"Obsidian status: {status_text} (Vault '{target_path}' {active_vault_text}).\n"
         if launched:
-            if target_path:
-                response_msg += f"Successfully triggered launch command for vault: '{target_path}'.\n"
-            else:
-                response_msg += "Successfully triggered default Obsidian launch command.\n"
+            response_msg += f"Successfully triggered launch command for vault: '{target_path}'.\n"
+        elif is_running:
+            response_msg += f"Vault is already running and accessible on port {port}.\n"
         else:
             response_msg += f"Failed to trigger launch command: {error_msg}.\n"
 
@@ -945,23 +984,19 @@ class WakeUpObsidianToolHandler(ToolHandler):
             response_msg += "\nDetected vaults on system:\n"
             for k, path in vaults_info.items():
                 marker = ""
-                if path == active_vault_path:
-                    marker = " [Currently Active on API]"
-                elif path == last_open_vault and not active_vault_path:
-                    marker = " [Last active]"
+                if path == target_path:
+                    marker = " [Selected / Active]"
                 response_msg += f"- {path}{marker}\n"
         else:
             response_msg += "\nNo registered vaults detected in system configuration."
 
-        if launched:
-            return [
-                TextContent(
-                    type="text",
-                    text=response_msg
-                )
-            ]
-        else:
-            raise RuntimeError(f"Failed to launch Obsidian: {error_msg}")
+        return [
+            TextContent(
+                type="text",
+                text=response_msg
+            )
+        ]
+
 
 
 

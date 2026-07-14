@@ -12,12 +12,14 @@ def _text(result):
 
 
 def _run_handler(handler, method_name, args, return_value=None):
-    with patch("mcp_obsidian.tools.obsidian.Obsidian") as mock_cls:
-        api = mock_cls.return_value
-        getattr(api, method_name).return_value = return_value
-        result = handler.run_tool(args)
-    mock_cls.assert_called_once_with(api_key="test-key", host="127.0.0.1")
+    with patch("mcp_obsidian.tools.get_active_vault_connection", return_value=("127.0.0.1", 27123, "test-key", False, None)):
+        with patch("mcp_obsidian.tools.obsidian.Obsidian") as mock_cls:
+            api = mock_cls.return_value
+            getattr(api, method_name).return_value = return_value
+            result = handler.run_tool(args)
+        mock_cls.assert_called_once_with(api_key="test-key", host="127.0.0.1", port=27123, protocol="http")
     return result, api
+
 
 
 def test_base_tool_handler_requires_overrides():
