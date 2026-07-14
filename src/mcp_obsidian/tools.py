@@ -1079,10 +1079,20 @@ class CloseObsidianToolHandler(ToolHandler):
             error_msg = ""
             if system == "Windows":
                 try:
-                    # Gracefully close the window by title using PowerShell CloseMainWindow()
-                    cmd = ["powershell.exe", "-Command", f"Get-Process -Name Obsidian -ErrorAction SilentlyContinue | Where-Object {{$_.MainWindowTitle -like '*{vault_name}*'}} | ForEach-Object {{$_.CloseMainWindow()}}"]
-                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    closed = True
+                    # Parse tasklist /v to find the PID of the window titled with the vault name
+                    output = subprocess.check_output('tasklist /v /FI "IMAGENAME eq Obsidian.exe"', shell=True, text=True)
+                    target_pid = None
+                    for line in output.splitlines():
+                        if "Obsidian.exe" in line and vault_name.lower() in line.lower():
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                target_pid = parts[1]
+                                break
+                    if target_pid:
+                        subprocess.run(f"taskkill /PID {target_pid} /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        closed = True
+                    else:
+                        error_msg = f"Could not find active window for vault '{vault_name}'"
                 except Exception as e:
                     error_msg = str(e)
             elif system == "Darwin":

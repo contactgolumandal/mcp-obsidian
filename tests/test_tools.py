@@ -299,15 +299,18 @@ def test_close_obsidian_handler_terminates_processes():
 def test_close_obsidian_handler_closes_specific_vault():
     import subprocess
     handler = tools.CloseObsidianToolHandler()
+    mock_tasklist = (
+        "Image Name      PID  Session Name  Session#  Mem Usage  Status   User Name  CPU Time  Window Title\n"
+        "Obsidian.exe    999  Console       1         100MB      Running  MSI\\conta  0:00:01   MyCustomVault - Obsidian"
+    )
     with patch("platform.system", return_value="Windows"):
-        with patch("subprocess.run") as mock_run:
-            result = handler.run_tool({"vault_path": "C:\\MyCustomVault"})
-            mock_run.assert_called_once_with(
-                ["powershell.exe", "-Command", "Get-Process -Name Obsidian -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -like '*MyCustomVault*'} | ForEach-Object {$_.CloseMainWindow()}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            assert "Successfully sent close command" in _text(result)
+        with patch("subprocess.check_output", return_value=mock_tasklist) as mock_check:
+            with patch("subprocess.run") as mock_run:
+                result = handler.run_tool({"vault_path": "C:\\MyCustomVault"})
+                mock_check.assert_called_once_with('tasklist /v /FI "IMAGENAME eq Obsidian.exe"', shell=True, text=True)
+                mock_run.assert_called_once_with("taskkill /PID 999 /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                assert "Successfully sent close command" in _text(result)
+
 
 
 
