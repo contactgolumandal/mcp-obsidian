@@ -734,3 +734,33 @@ class RecentChangesToolHandler(ToolHandler):
                 text=json.dumps(results, indent=2)
             )
         ]
+
+class WakeUpObsidianToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__("obsidian_wake_up")
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description="Launches the Obsidian app if it is not already running.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        )
+
+    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        import subprocess
+        try:
+            # Launch obsidian using command prompt/shell
+            subprocess.Popen("obsidian", shell=True)
+            return [
+                TextContent(
+                    type="text",
+                    text="Obsidian launch command triggered successfully."
+                )
+            ]
+        except Exception as e:
+            raise RuntimeError(f"Failed to launch Obsidian: {str(e)}")
+

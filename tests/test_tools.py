@@ -239,3 +239,12 @@ def test_recent_changes_handler_uses_defaults():
     handler = tools.RecentChangesToolHandler()
     _, api = _run_handler(handler, "get_recent_changes", {}, [])
     api.get_recent_changes.assert_called_once_with(10, 90)
+
+
+def test_wake_up_obsidian_handler_launches_app():
+    handler = tools.WakeUpObsidianToolHandler()
+    with patch("subprocess.Popen") as mock_popen:
+        result = handler.run_tool({})
+        mock_popen.assert_called_once_with("obsidian", shell=True)
+        assert _text(result) == "Obsidian launch command triggered successfully."
+
