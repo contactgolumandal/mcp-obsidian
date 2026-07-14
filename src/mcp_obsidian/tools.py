@@ -742,62 +742,178 @@ class WakeUpObsidianToolHandler(ToolHandler):
     def get_tool_description(self):
         return Tool(
             name=self.name,
-            description="Launches the Obsidian app if it is not already running.",
+            description="Checks if Obsidian is running, lists available vaults, and launches a specific vault (or the last open one).",
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "vault_path": {
+                        "type": "string",
+                        "description": "Optional absolute path of the vault to open (e.g. 'C:\\Users\\conta\\Documents\\Vault'). If omitted, opens the last active vault."
+                    }
+                },
                 "required": []
             }
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
         import os
+        import platform
+        import json
         import subprocess
+        import urllib.parse
+
+        system = platform.system()
+        vaults_info = {}
+        last_open_vault = None
+        is_running = False
         
-        # Paths to look for Obsidian
-        possible_paths = [
-            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Obsidian\\Obsidian.exe"),
-            os.path.join(os.environ.get("LocalAppData", ""), "Obsidian\\Obsidian.exe"),
-        ]
-        
+        # 1. Check if Obsidian is already running
+        try:
+            if system == "Windows":
+                output = subprocess.check_output('tasklist /FI "IMAGENAME eq Obsidian.exe"', shell=True, text=True)
+                is_running = "Obsidian.exe" in output
+            elif system == "Darwin":
+                output = subprocess.check_output(['pgrep', '-x', 'Obsidian'], text=True)
+                is_running = len(output.strip()) > 0
+            else:
+                output = subprocess.check_output(['pgrep', '-x', 'obsidian'], text=True)
+                is_running = len(output.strip()) > 0
+        except Exception:
+            is_running = False
+
+        # 2. Parse obsidian.json to find available vaults
+        json_path = None
+        if system == "Windows":
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                json_path = os.path.join(appdata, "obsidian\\obsidian.json")
+        elif system == "Darwin":
+            json_path = os.path.expanduser("~/Library/Application Support/obsidian/obsidian.json")
+        else:
+            json_path = os.path.expanduser("~/.config/obsidian/obsidian.json")
+
+        if json_path and os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    vaults = data.get("vaults", {})
+                    for k, v in vaults.items():
+                        v_path = v.get("path")
+                        if v_path:
+                            # Normalize path separators
+                            v_path_norm = os.path.normpath(v_path)
+                            vaults_info[k] = v_path_norm
+                            if v.get("open"):
+                                last_open_vault = v_path_norm
+            except Exception:
+                pass
+
+        # 3. Determine target vault to open
+        target_path = args.get("vault_path")
+        if target_path:
+            target_path = os.path.normpath(target_path)
+        else:
+            target_path = last_open_vault
+
+        # 4. Launch the vault
         launched = False
-        error_messages = []
-        
-        # 1. Try launching using absolute paths via os.startfile
-        for path in possible_paths:
-            if path and os.path.exists(path):
+        error_msg = ""
+        launch_url = "obsidian://open"
+        if target_path:
+            encoded_path = urllib.parse.quote(target_path)
+            launch_url = f"obsidian://open?path={encoded_path}"
+
+        if system == "Windows":
+            # If no specific vault is targeted, try launching the executable directly first (verified to wake up GUI)
+            if not target_path:
+                program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+                local_appdata = os.environ.get("LocalAppData", "")
+                program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+                
+                paths = []
+                if local_appdata:
+                    paths.append(os.path.join(local_appdata, "Obsidian\\Obsidian.exe"))
+                paths.append(os.path.join(program_files, "Obsidian\\Obsidian.exe"))
+                paths.append(os.path.join(program_files_x86, "Obsidian\\Obsidian.exe"))
+
+                for path in paths:
+                    if os.path.exists(path):
+                        try:
+                            cmd = ["powershell.exe", "-Command", f"Start-Process '{path}' -Wait"]
+                            subprocess.Popen(cmd)
+                            launched = True
+                            break
+                        except Exception as e:
+                            error_msg = str(e)
+
+            # Fallback to launching via protocol (with wait) if direct path failed or if a specific vault is targeted
+            if not launched:
                 try:
-                    os.startfile(path)
+                    cmd = ["powershell.exe", "-Command", f"Start-Process '{launch_url}' -Wait"]
+                    subprocess.Popen(cmd)
                     launched = True
-                    break
                 except Exception as e:
-                    error_messages.append(f"Failed path {path}: {str(e)}")
-        
-        # 2. Fallback: try URI protocol handler via os.startfile
-        if not launched:
+                    error_msg = str(e)
+
+        elif system == "Darwin":  # macOS
             try:
-                os.startfile("obsidian://open")
+                # If we have a specific vault, open the URL. Otherwise open the app bundle
+                if target_path:
+                    subprocess.Popen(["open", launch_url])
+                else:
+                    macos_path = "/Applications/Obsidian.app"
+                    if os.path.exists(macos_path):
+                        subprocess.Popen(["open", macos_path])
+                    else:
+                        subprocess.Popen(["open", launch_url])
                 launched = True
             except Exception as e:
-                error_messages.append(f"Failed protocol: {str(e)}")
-                
-        # 3. Fallback: try powershell Start-Process
-        if not launched:
+                error_msg = str(e)
+
+        else:  # Linux / other
             try:
-                subprocess.Popen(["powershell.exe", "-Command", "Start-Process obsidian"], shell=True)
+                if target_path:
+                    subprocess.Popen(["xdg-open", launch_url])
+                else:
+                    try:
+                        subprocess.Popen(["obsidian"])
+                    except Exception:
+                        subprocess.Popen(["xdg-open", launch_url])
                 launched = True
             except Exception as e:
-                error_messages.append(f"Failed subprocess powershell: {str(e)}")
-                
+                error_msg = str(e)
+
+        # 5. Format results
+        status_text = "running" if is_running else "not running"
+        response_msg = f"Obsidian status: {status_text}.\n"
+        if launched:
+            if target_path:
+                response_msg += f"Successfully triggered launch command for vault: '{target_path}'.\n"
+            else:
+                response_msg += "Successfully triggered default Obsidian launch command.\n"
+        else:
+            response_msg += f"Failed to trigger launch command: {error_msg}.\n"
+
+        if vaults_info:
+            response_msg += "\nDetected vaults on system:\n"
+            for k, path in vaults_info.items():
+                marker = " [Last active]" if path == last_open_vault else ""
+                response_msg += f"- {path}{marker}\n"
+        else:
+            response_msg += "\nNo registered vaults detected in system configuration."
+
         if launched:
             return [
                 TextContent(
                     type="text",
-                    text="Obsidian launch command triggered successfully."
+                    text=response_msg
                 )
             ]
         else:
-            errors_str = "; ".join(error_messages)
-            raise RuntimeError(f"Failed to launch Obsidian. Attempts: {errors_str}")
+            raise RuntimeError(f"Failed to launch Obsidian: {error_msg}")
+
+
+
+
 
 

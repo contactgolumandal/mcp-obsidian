@@ -243,9 +243,28 @@ def test_recent_changes_handler_uses_defaults():
 
 def test_wake_up_obsidian_handler_launches_app():
     handler = tools.WakeUpObsidianToolHandler()
-    with patch("os.startfile") as mock_startfile:
-        result = handler.run_tool({})
-        mock_startfile.assert_called()
-        assert _text(result) == "Obsidian launch command triggered successfully."
+    with patch("platform.system", return_value="Windows"):
+        with patch("os.path.exists", return_value=False):
+            with patch("subprocess.check_output", return_value=""):
+                with patch("subprocess.Popen") as mock_popen:
+                    result = handler.run_tool({})
+                    mock_popen.assert_called_once_with(["powershell.exe", "-Command", "Start-Process 'obsidian://open' -Wait"])
+                    assert "Obsidian status:" in _text(result)
+
+
+def test_wake_up_obsidian_handler_with_custom_path():
+    handler = tools.WakeUpObsidianToolHandler()
+    with patch("platform.system", return_value="Windows"):
+        with patch("os.path.exists", return_value=False):
+            with patch("subprocess.check_output", return_value=""):
+                with patch("subprocess.Popen") as mock_popen:
+                    result = handler.run_tool({"vault_path": "C:\\MyCustomVault"})
+                    mock_popen.assert_called_once_with(["powershell.exe", "-Command", "Start-Process 'obsidian://open?path=C%3A%5CMyCustomVault' -Wait"])
+                    assert "C:\\MyCustomVault" in _text(result)
+
+
+
+
+
 
 
