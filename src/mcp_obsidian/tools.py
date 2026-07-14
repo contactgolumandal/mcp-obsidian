@@ -751,16 +751,53 @@ class WakeUpObsidianToolHandler(ToolHandler):
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        import os
         import subprocess
-        try:
-            # Launch obsidian using command prompt/shell
-            subprocess.Popen("obsidian", shell=True)
+        
+        # Paths to look for Obsidian
+        possible_paths = [
+            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Obsidian\\Obsidian.exe"),
+            os.path.join(os.environ.get("LocalAppData", ""), "Obsidian\\Obsidian.exe"),
+        ]
+        
+        launched = False
+        error_messages = []
+        
+        # 1. Try launching using absolute paths via os.startfile
+        for path in possible_paths:
+            if path and os.path.exists(path):
+                try:
+                    os.startfile(path)
+                    launched = True
+                    break
+                except Exception as e:
+                    error_messages.append(f"Failed path {path}: {str(e)}")
+        
+        # 2. Fallback: try URI protocol handler via os.startfile
+        if not launched:
+            try:
+                os.startfile("obsidian://open")
+                launched = True
+            except Exception as e:
+                error_messages.append(f"Failed protocol: {str(e)}")
+                
+        # 3. Fallback: try powershell Start-Process
+        if not launched:
+            try:
+                subprocess.Popen(["powershell.exe", "-Command", "Start-Process obsidian"], shell=True)
+                launched = True
+            except Exception as e:
+                error_messages.append(f"Failed subprocess powershell: {str(e)}")
+                
+        if launched:
             return [
                 TextContent(
                     type="text",
                     text="Obsidian launch command triggered successfully."
                 )
             ]
-        except Exception as e:
-            raise RuntimeError(f"Failed to launch Obsidian: {str(e)}")
+        else:
+            errors_str = "; ".join(error_messages)
+            raise RuntimeError(f"Failed to launch Obsidian. Attempts: {errors_str}")
+
 

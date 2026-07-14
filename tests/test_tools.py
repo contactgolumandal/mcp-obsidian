@@ -243,8 +243,9 @@ def test_recent_changes_handler_uses_defaults():
 
 def test_wake_up_obsidian_handler_launches_app():
     handler = tools.WakeUpObsidianToolHandler()
-    with patch("subprocess.Popen") as mock_popen:
+    with patch("os.startfile") as mock_startfile:
         result = handler.run_tool({})
-        mock_popen.assert_called_once_with("obsidian", shell=True)
+        mock_startfile.assert_called()
         assert _text(result) == "Obsidian launch command triggered successfully."
+
 
