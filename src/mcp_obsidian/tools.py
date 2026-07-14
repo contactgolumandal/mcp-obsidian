@@ -12,11 +12,19 @@ from . import obsidian
 api_key = os.getenv("OBSIDIAN_API_KEY", "")
 obsidian_host = os.getenv("OBSIDIAN_HOST", "127.0.0.1")
 
+_connection_cache = {
+    "state_mtime": None,
+    "settings_mtime": None,
+    "active_path": None,
+    "connection": None
+}
+
 def get_active_vault_connection():
-    """Returns (host, port, api_key, use_https, vault_path) for the active vault connection."""
+    """Returns (host, port, api_key, use_https, vault_path) for the active vault connection, with in-memory caching."""
     import os
     import json
     import platform
+    global _connection_cache
     
     # Defaults
     default_host = os.getenv("OBSIDIAN_HOST", "127.0.0.1")
@@ -24,10 +32,33 @@ def get_active_vault_connection():
     default_port = 27123
     use_https = False
     
-    # 1. Determine active vault path from state file
+    # Check modification time of state file
     state_path = os.path.join(os.path.dirname(__file__), "../../.active_vault.json")
-    active_path = None
+    current_state_mtime = None
     if os.path.exists(state_path):
+        try:
+            current_state_mtime = os.path.getmtime(state_path)
+        except Exception:
+            pass
+
+    # If state file mtime matches our cache, check if settings file mtime matches too
+    if current_state_mtime == _connection_cache["state_mtime"] and _connection_cache["connection"] is not None:
+        active_path = _connection_cache["active_path"]
+        current_settings_mtime = None
+        if active_path:
+            settings_path = os.path.join(active_path, ".obsidian", "plugins", "obsidian-local-rest-api", "data.json")
+            if os.path.exists(settings_path):
+                try:
+                    current_settings_mtime = os.path.getmtime(settings_path)
+                except Exception:
+                    pass
+        
+        if current_settings_mtime == _connection_cache["settings_mtime"]:
+            return _connection_cache["connection"]
+
+    # Cache miss - read files
+    active_path = None
+    if current_state_mtime is not None:
         try:
             with open(state_path, "r", encoding="utf-8") as f:
                 state = json.load(f)
@@ -42,7 +73,7 @@ def get_active_vault_connection():
         if system == "Windows":
             appdata = os.environ.get("APPDATA")
             if appdata:
-                json_path = os.path.join(appdata, "obsidian\\obsidian.json")
+                json_path = os.path.join(appdata, "obsidian", "obsidian.json")
         elif system == "Darwin":
             json_path = os.path.expanduser("~/Library/Application Support/obsidian/obsidian.json")
         else:
@@ -60,29 +91,40 @@ def get_active_vault_connection():
             except Exception:
                 pass
 
+    resolved_connection = (default_host, default_port, default_key, use_https, active_path)
+    current_settings_mtime = None
+
     # 3. Read vault-specific settings (port and api key) from the active vault
     if active_path:
-        # Check both Windows-style and Unix-style slashes
         settings_path = os.path.join(active_path, ".obsidian", "plugins", "obsidian-local-rest-api", "data.json")
         if os.path.exists(settings_path):
             try:
+                current_settings_mtime = os.path.getmtime(settings_path)
                 with open(settings_path, "r", encoding="utf-8") as f:
                     settings = json.load(f)
                     val_key = settings.get("apiKey", default_key)
                     
-                    # Determine port based on secure/insecure settings
                     enable_insecure = settings.get("enableInsecureServer", True)
                     insecure_port = settings.get("insecurePort", 27123)
                     secure_port = settings.get("port", 27124)
                     
                     if enable_insecure:
-                        return default_host, insecure_port, val_key, False, active_path
+                        resolved_connection = (default_host, insecure_port, val_key, False, active_path)
                     else:
-                        return default_host, secure_port, val_key, True, active_path
+                        resolved_connection = (default_host, secure_port, val_key, True, active_path)
             except Exception:
                 pass
                 
-    return default_host, default_port, default_key, use_https, active_path
+    # Update cache
+    _connection_cache = {
+        "state_mtime": current_state_mtime,
+        "settings_mtime": current_settings_mtime,
+        "active_path": active_path,
+        "connection": resolved_connection
+    }
+    
+    return resolved_connection
+
 
 def get_obsidian_api() -> obsidian.Obsidian:
     host, port, key, use_https, vault_path = get_active_vault_connection()

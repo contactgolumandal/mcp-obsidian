@@ -1,5 +1,5 @@
 import json
-from unittest.mock import patch
+from unittest.mock import patch, mock_open
 
 import pytest
 
@@ -263,6 +263,28 @@ def test_wake_up_obsidian_handler_with_custom_path():
                     result = handler.run_tool({"vault_path": "C:\\MyCustomVault"})
                     mock_popen.assert_called_once_with(["powershell.exe", "-Command", "Start-Process 'obsidian://open?path=C%3A%5CMyCustomVault' -Wait"])
                     assert "C:\\MyCustomVault" in _text(result)
+
+
+def test_get_active_vault_connection_caching():
+    # Reset cache
+    tools._connection_cache = {
+        "state_mtime": None,
+        "settings_mtime": None,
+        "active_path": None,
+        "connection": None
+    }
+    
+    # We mock exists to return True so it attempts to read mtime and files
+    with patch("os.path.exists", return_value=True):
+        with patch("os.path.getmtime", return_value=123.45):
+            with patch("builtins.open", mock_open(read_data='{"active_vault_path": "C:\\\\MockVault"}')):
+                # First call loads from files
+                conn1 = tools.get_active_vault_connection()
+                
+            # Second call (without open mock) should hit the cache if mtime is unchanged
+            conn2 = tools.get_active_vault_connection()
+            assert conn1 == conn2
+
 
 
 

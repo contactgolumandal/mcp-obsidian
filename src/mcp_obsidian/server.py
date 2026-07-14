@@ -15,6 +15,9 @@ from mcp.types import (
 
 load_dotenv()
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 from . import tools
 
 # Load environment variables
