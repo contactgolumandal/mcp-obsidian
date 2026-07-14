@@ -742,13 +742,17 @@ class WakeUpObsidianToolHandler(ToolHandler):
     def get_tool_description(self):
         return Tool(
             name=self.name,
-            description="Checks if Obsidian is running, lists available vaults, and launches a specific vault (or the last open one).",
+            description="Checks if Obsidian is running, lists available vaults, and launches a specific vault (or the last open one). Handles switching between vaults.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "vault_path": {
                         "type": "string",
                         "description": "Optional absolute path of the vault to open (e.g. 'C:\\Users\\conta\\Documents\\Vault'). If omitted, opens the last active vault."
+                    },
+                    "force_switch": {
+                        "type": "boolean",
+                        "description": "If true, closes currently running Obsidian instances first to free up the API port for the target vault. Defaults to true if a different vault is requested."
                     }
                 },
                 "required": []
@@ -761,11 +765,13 @@ class WakeUpObsidianToolHandler(ToolHandler):
         import json
         import subprocess
         import urllib.parse
+        import requests
 
         system = platform.system()
         vaults_info = {}
         last_open_vault = None
         is_running = False
+        active_vault_path = None
         
         # 1. Check if Obsidian is already running
         try:
@@ -800,7 +806,6 @@ class WakeUpObsidianToolHandler(ToolHandler):
                     for k, v in vaults.items():
                         v_path = v.get("path")
                         if v_path:
-                            # Normalize path separators
                             v_path_norm = os.path.normpath(v_path)
                             vaults_info[k] = v_path_norm
                             if v.get("open"):
@@ -808,14 +813,53 @@ class WakeUpObsidianToolHandler(ToolHandler):
             except Exception:
                 pass
 
-        # 3. Determine target vault to open
+        # 3. Detect which vault is currently active on port 27123
+        if is_running:
+            try:
+                url = f"http://{obsidian_host}:27123/vault/"
+                headers = {"Authorization": f"Bearer {api_key}"}
+                r = requests.get(url, headers=headers, timeout=1.5)
+                if r.status_code == 200:
+                    api_files = [f.get("path") for f in r.json() if "path" in f]
+                    best_match_count = -1
+                    for v_id, v_path in vaults_info.items():
+                        if os.path.exists(v_path):
+                            try:
+                                local_files = os.listdir(v_path)
+                                match_count = sum(1 for f in api_files if f in local_files)
+                                if match_count > best_match_count:
+                                    best_match_count = match_count
+                                    active_vault_path = v_path
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        # 4. Determine target vault to open
         target_path = args.get("vault_path")
         if target_path:
             target_path = os.path.normpath(target_path)
         else:
             target_path = last_open_vault
 
-        # 4. Launch the vault
+        # 5. Handle switching (close running instance if different vault is requested)
+        force_switch = args.get("force_switch", True)
+        was_closed = False
+        if is_running and target_path and active_vault_path and target_path != active_vault_path and force_switch:
+            try:
+                if system == "Windows":
+                    subprocess.run("taskkill /IM Obsidian.exe /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.run(["pkill", "-f", "Obsidian"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                import time
+                time.sleep(1.5)
+                is_running = False
+                active_vault_path = None
+                was_closed = True
+            except Exception:
+                pass
+
+        # 6. Launch the vault
         launched = False
         error_msg = ""
         launch_url = "obsidian://open"
@@ -824,8 +868,8 @@ class WakeUpObsidianToolHandler(ToolHandler):
             launch_url = f"obsidian://open?path={encoded_path}"
 
         if system == "Windows":
-            # If no specific vault is targeted, try launching the executable directly first (verified to wake up GUI)
-            if not target_path:
+            # If no specific vault is targeted and we didn't close it, try launching executable
+            if not target_path and not was_closed:
                 program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
                 local_appdata = os.environ.get("LocalAppData", "")
                 program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
@@ -846,7 +890,6 @@ class WakeUpObsidianToolHandler(ToolHandler):
                         except Exception as e:
                             error_msg = str(e)
 
-            # Fallback to launching via protocol (with wait) if direct path failed or if a specific vault is targeted
             if not launched:
                 try:
                     cmd = ["powershell.exe", "-Command", f"Start-Process '{launch_url}' -Wait"]
@@ -857,7 +900,6 @@ class WakeUpObsidianToolHandler(ToolHandler):
 
         elif system == "Darwin":  # macOS
             try:
-                # If we have a specific vault, open the URL. Otherwise open the app bundle
                 if target_path:
                     subprocess.Popen(["open", launch_url])
                 else:
@@ -883,9 +925,14 @@ class WakeUpObsidianToolHandler(ToolHandler):
             except Exception as e:
                 error_msg = str(e)
 
-        # 5. Format results
-        status_text = "running" if is_running else "not running"
-        response_msg = f"Obsidian status: {status_text}.\n"
+        # 7. Format results
+        status_text = "running" if (is_running or launched) else "not running"
+        active_vault_text = f"Active vault on API: '{active_vault_path}'" if active_vault_path else "No active vault detected on API port"
+        
+        response_msg = f"Obsidian status: {status_text} ({active_vault_text}).\n"
+        if was_closed:
+            response_msg += f"Closed previous active vault '{active_vault_path}' to free up API port.\n"
+
         if launched:
             if target_path:
                 response_msg += f"Successfully triggered launch command for vault: '{target_path}'.\n"
@@ -897,7 +944,11 @@ class WakeUpObsidianToolHandler(ToolHandler):
         if vaults_info:
             response_msg += "\nDetected vaults on system:\n"
             for k, path in vaults_info.items():
-                marker = " [Last active]" if path == last_open_vault else ""
+                marker = ""
+                if path == active_vault_path:
+                    marker = " [Currently Active on API]"
+                elif path == last_open_vault and not active_vault_path:
+                    marker = " [Last active]"
                 response_msg += f"- {path}{marker}\n"
         else:
             response_msg += "\nNo registered vaults detected in system configuration."
@@ -911,6 +962,7 @@ class WakeUpObsidianToolHandler(ToolHandler):
             ]
         else:
             raise RuntimeError(f"Failed to launch Obsidian: {error_msg}")
+
 
 
 
