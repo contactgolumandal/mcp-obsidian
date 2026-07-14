@@ -286,6 +286,27 @@ def test_get_active_vault_connection_caching():
             assert conn1 == conn2
 
 
+def test_close_obsidian_handler_terminates_processes():
+    import subprocess
+    handler = tools.CloseObsidianToolHandler()
+    with patch("platform.system", return_value="Windows"):
+        with patch("subprocess.run") as mock_run:
+            result = handler.run_tool({})
+            mock_run.assert_called_once_with("taskkill /IM Obsidian.exe /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            assert "terminated all Obsidian processes" in _text(result)
+
+
+def test_close_obsidian_handler_closes_specific_vault():
+    handler = tools.CloseObsidianToolHandler()
+    with patch("mcp_obsidian.tools.get_active_vault_connection", return_value=("127.0.0.1", 27125, "test-key", False, "C:\\MyCustomVault")):
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            result = handler.run_tool({"vault_path": "C:\\MyCustomVault"})
+            mock_post.assert_any_call("http://127.0.0.1:27125/commands/app:close-window", headers={"Authorization": "Bearer test-key"}, timeout=2, verify=False)
+            assert "Successfully sent close command" in _text(result)
+
+
+
 
 
 

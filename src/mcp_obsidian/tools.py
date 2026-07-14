@@ -1040,6 +1040,153 @@ class WakeUpObsidianToolHandler(ToolHandler):
         ]
 
 
+class CloseObsidianToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__("obsidian_sleep")
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description="Closes a specific vault window or shuts down Obsidian completely.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "vault_path": {
+                        "type": "string",
+                        "description": "Optional absolute path of the vault window to close. If omitted, closes all running Obsidian instances."
+                    }
+                },
+                "required": []
+            }
+        )
+
+    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        import os
+        import platform
+        import json
+        import subprocess
+        import requests
+
+        system = platform.system()
+        target_path = args.get("vault_path")
+        
+        if target_path:
+            # 1. Close a specific vault window via Local REST API
+            target_path = os.path.normpath(target_path)
+            
+            # Temporary state change to resolve settings for this target vault
+            state_path = os.path.join(os.path.dirname(__file__), "../../.active_vault.json")
+            old_active_path = None
+            if os.path.exists(state_path):
+                try:
+                    with open(state_path, "r", encoding="utf-8") as f:
+                        old_active_path = json.load(f).get("active_vault_path")
+                except Exception:
+                    pass
+
+            # Temporarily save target path to resolve settings
+            try:
+                with open(state_path, "w", encoding="utf-8") as f:
+                    json.dump({"active_vault_path": target_path}, f)
+            except Exception:
+                pass
+
+            # Invalidate cache
+            global _connection_cache
+            _connection_cache = {
+                "state_mtime": None,
+                "settings_mtime": None,
+                "active_path": None,
+                "connection": None
+            }
+
+            host, port, key, use_https, resolved_path = get_active_vault_connection()
+
+            # Restore original active vault path
+            if old_active_path:
+                try:
+                    with open(state_path, "w", encoding="utf-8") as f:
+                        json.dump({"active_vault_path": old_active_path}, f)
+                except Exception:
+                    pass
+            else:
+                try:
+                    os.remove(state_path)
+                except Exception:
+                    pass
+                    
+            _connection_cache = {
+                "state_mtime": None,
+                "settings_mtime": None,
+                "active_path": None,
+                "connection": None
+            }
+
+            closed = False
+            error_msg = ""
+            try:
+                proto = "https" if use_https else "http"
+                # Try app:close-window first, fallback to workspace:close
+                headers = {"Authorization": f"Bearer {key}"}
+                url = f"{proto}://{host}:{port}/commands/app:close-window"
+                r = requests.post(url, headers=headers, timeout=2, verify=False)
+                if r.status_code in [200, 204]:
+                    closed = True
+                else:
+                    url2 = f"{proto}://{host}:{port}/commands/workspace:close"
+                    r2 = requests.post(url2, headers=headers, timeout=2, verify=False)
+                    if r2.status_code in [200, 204]:
+                        closed = True
+                    else:
+                        error_msg = f"API returned status code {r2.status_code}"
+            except Exception as e:
+                error_msg = str(e)
+
+            if closed:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Successfully sent close command to vault window: '{target_path}'."
+                    )
+                ]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to close vault window via API: {error_msg}. (Make sure the vault is running and has the Local REST API active)."
+                    )
+                ]
+        else:
+            # 2. General shutdown - close all Obsidian processes
+            closed = False
+            error_msg = ""
+            try:
+                if system == "Windows":
+                    subprocess.run("taskkill /IM Obsidian.exe /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    closed = True
+                else:
+                    subprocess.run(["pkill", "-f", "Obsidian"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    closed = True
+            except Exception as e:
+                error_msg = str(e)
+
+            if closed:
+                return [
+                    TextContent(
+                        type="text",
+                        text="Successfully terminated all Obsidian processes."
+                    )
+                ]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to terminate Obsidian processes: {error_msg}."
+                    )
+                ]
+
+
+
 
 
 
