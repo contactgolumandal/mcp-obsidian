@@ -1071,76 +1071,35 @@ class CloseObsidianToolHandler(ToolHandler):
         target_path = args.get("vault_path")
         
         if target_path:
-            # 1. Close a specific vault window via Local REST API
+            # 1. Close a specific vault window using OS-level window close commands (matching vault name in window title)
             target_path = os.path.normpath(target_path)
+            vault_name = os.path.basename(target_path)
             
-            # Temporary state change to resolve settings for this target vault
-            state_path = os.path.join(os.path.dirname(__file__), "../../.active_vault.json")
-            old_active_path = None
-            if os.path.exists(state_path):
-                try:
-                    with open(state_path, "r", encoding="utf-8") as f:
-                        old_active_path = json.load(f).get("active_vault_path")
-                except Exception:
-                    pass
-
-            # Temporarily save target path to resolve settings
-            try:
-                with open(state_path, "w", encoding="utf-8") as f:
-                    json.dump({"active_vault_path": target_path}, f)
-            except Exception:
-                pass
-
-            # Invalidate cache
-            global _connection_cache
-            _connection_cache = {
-                "state_mtime": None,
-                "settings_mtime": None,
-                "active_path": None,
-                "connection": None
-            }
-
-            host, port, key, use_https, resolved_path = get_active_vault_connection()
-
-            # Restore original active vault path
-            if old_active_path:
-                try:
-                    with open(state_path, "w", encoding="utf-8") as f:
-                        json.dump({"active_vault_path": old_active_path}, f)
-                except Exception:
-                    pass
-            else:
-                try:
-                    os.remove(state_path)
-                except Exception:
-                    pass
-                    
-            _connection_cache = {
-                "state_mtime": None,
-                "settings_mtime": None,
-                "active_path": None,
-                "connection": None
-            }
-
             closed = False
             error_msg = ""
-            try:
-                proto = "https" if use_https else "http"
-                # Try app:close-window first, fallback to workspace:close
-                headers = {"Authorization": f"Bearer {key}"}
-                url = f"{proto}://{host}:{port}/commands/app:close-window"
-                r = requests.post(url, headers=headers, timeout=2, verify=False)
-                if r.status_code in [200, 204]:
+            if system == "Windows":
+                try:
+                    # Gracefully close the window by title using PowerShell CloseMainWindow()
+                    cmd = ["powershell.exe", "-Command", f"Get-Process -Name Obsidian -ErrorAction SilentlyContinue | Where-Object {{$_.MainWindowTitle -like '*{vault_name}*'}} | ForEach-Object {{$_.CloseMainWindow()}}"]
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     closed = True
-                else:
-                    url2 = f"{proto}://{host}:{port}/commands/workspace:close"
-                    r2 = requests.post(url2, headers=headers, timeout=2, verify=False)
-                    if r2.status_code in [200, 204]:
-                        closed = True
-                    else:
-                        error_msg = f"API returned status code {r2.status_code}"
-            except Exception as e:
-                error_msg = str(e)
+                except Exception as e:
+                    error_msg = str(e)
+            elif system == "Darwin":
+                try:
+                    # AppleScript to close the window containing the vault name in its title
+                    script = f'tell application "System Events" to click (first button whose subrole is "AXCloseButton") of (first window of process "Obsidian" whose name contains "{vault_name}")'
+                    subprocess.run(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    closed = True
+                except Exception as e:
+                    error_msg = str(e)
+            else:  # Linux
+                try:
+                    # Use wmctrl to close window by title
+                    subprocess.run(["wmctrl", "-c", vault_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    closed = True
+                except Exception as e:
+                    error_msg = str(e)
 
             if closed:
                 return [
@@ -1153,9 +1112,10 @@ class CloseObsidianToolHandler(ToolHandler):
                 return [
                     TextContent(
                         type="text",
-                        text=f"Failed to close vault window via API: {error_msg}. (Make sure the vault is running and has the Local REST API active)."
+                        text=f"Failed to close vault window: {error_msg}."
                     )
                 ]
+
         else:
             # 2. General shutdown - close all Obsidian processes
             closed = False
